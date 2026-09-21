@@ -1,0 +1,6 @@
+{
+  "$schema": "https://getbb.app/schemas/plugins.schema.json",
+  "schemaVersion": 1,
+  "name": "danielo-bb-plugins",
+  "plugins": [{ "name": "reviewed-files", "source": "./plugins/reviewed-files" }]
+}
