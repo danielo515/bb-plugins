@@ -18,6 +18,10 @@
     {
       "name": "subagent-threads",
       "source": "./plugins/subagent-threads"
+    },
+    {
+      "name": "context-meter",
+      "source": "./plugins/context-meter"
     }
   ]
 }
