@@ -6,6 +6,7 @@ is a few commands rather than an archaeology session.
 | What | Where |
 | --- | --- |
 | `reviewed-files` plugin — "Reviewed" checkbox in the diff view that clears when an agent changes the file | [`plugins/reviewed-files`](plugins/reviewed-files) |
+| `existing-worktree` plugin — "Existing worktree" choice in the New Thread environment picker that attaches a `git worktree` already on disk | [`plugins/existing-worktree`](plugins/existing-worktree) |
 | `wide` theme — default palette, main panel stretched to the full window width | [`theme/wide`](theme/wide) |
 
 ## Reinstall on a new machine
