@@ -8,6 +8,7 @@ is a few commands rather than an archaeology session.
 | `reviewed-files` plugin — "Reviewed" checkbox in the diff view that clears when an agent changes the file | [`plugins/reviewed-files`](plugins/reviewed-files) |
 | `existing-worktree` plugin — "Existing worktree" choice in the New Thread environment picker that attaches a `git worktree` already on disk | [`plugins/existing-worktree`](plugins/existing-worktree) |
 | `worktrunk` plugin — "Worktrunk" choice in the New Thread environment picker that creates the worktree with `wt switch --create` (your wt paths, hooks, approvals) and `wt remove`s it on archive | [`plugins/worktrunk`](plugins/worktrunk) |
+| `subagent-threads` plugin — tells Claude Code threads to run subagents (`~/.claude/agents/*`) as child bb threads, since bb hides the native Agent tool | [`plugins/subagent-threads`](plugins/subagent-threads) |
 | `wide` theme — default palette, main panel stretched to the full window width | [`theme/wide`](theme/wide) |
 
 ## Reinstall on a new machine

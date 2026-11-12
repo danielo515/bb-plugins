@@ -14,6 +14,10 @@
     {
       "name": "worktrunk",
       "source": "./plugins/worktrunk"
+    },
+    {
+      "name": "subagent-threads",
+      "source": "./plugins/subagent-threads"
     }
   ]
 }
