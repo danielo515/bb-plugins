@@ -22,6 +22,10 @@
     {
       "name": "context-meter",
       "source": "./plugins/context-meter"
+    },
+    {
+      "name": "background-audits",
+      "source": "./plugins/background-audits"
     }
   ]
 }
