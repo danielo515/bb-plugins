@@ -1,5 +1,6 @@
-/* wide — default palette, but the main panel stretches to the full available width.
-   The thread / composer column is capped at 760px by a utility class; drop the cap. */
+/* wide — default palette, but the main panel is wider than the default.
+   The thread / composer column is capped at 760px by a utility class; raise the
+   cap instead of dropping it, so full-screen lines stay readable. */
 .max-w-\[760px\] {
-  max-width: none;
+  max-width: 1400px;
 }
