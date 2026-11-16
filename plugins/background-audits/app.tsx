@@ -1,5 +1,6 @@
 // Frontend: an "Audits" section in the thread context card with the latest background
-// audit of the thread: each reviewer's status, its findings, and Apply / Dismiss.
+// audit of the thread: each reviewer's status and findings, and Apply / Dismiss while
+// findings wait (only when the "Apply automatically" setting is off).
 import { useCallback, useEffect, useState } from "react";
 import {
   Markdown,
@@ -104,7 +105,9 @@ function AuditsSection({ threadId }: ExperimentalThreadContextCardProps) {
           </button>
         </div>
       )}
-      {run.appliedAt !== null && <p className="text-xs text-muted-foreground">Sent to the agent.</p>}
+      {run.appliedAt !== null && withFindings.some((review) => review.status === "done") && (
+        <p className="text-xs text-muted-foreground">Sent to the agent to fix. Review its changes in the diff.</p>
+      )}
     </div>
   );
 }

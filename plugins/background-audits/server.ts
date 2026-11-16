@@ -1,8 +1,9 @@
 // Background audits: runs the Claude Code review gates (~/.claude/hooks/*-review-gate.sh)
 // at the end of each bb turn and, for every agent a gate asks for, a hidden reviewer
-// thread that follows ~/.claude/agents/<agent>.md. Findings wait in the thread context
-// card until the user applies them (a button, or by asking the agent, which then calls
-// the `audit_findings` tool). Nothing is written into the visible transcript.
+// thread that follows ~/.claude/agents/<agent>.md. By default the findings are then
+// sent to the agent as an agent-only message so it applies them right away, and the
+// user reviews the result; with "Apply automatically" off they wait in the thread
+// context card instead. Script paths and the agents directory are plugin settings.
 //
 // The gate scripts stay the single source of truth for *when* to audit and *what*
 // scope to give each agent. Inside bb they skip themselves (BB_THREAD_ID is set), so
@@ -14,10 +15,8 @@ import { join } from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
-const GATE_SCRIPTS = ["effect-review-gate.sh", "naming-review-gate.sh"].map((name) =>
-  join(homedir(), ".claude", "hooks", name),
-);
-const AGENTS_DIR = join(homedir(), ".claude", "agents");
+const DEFAULT_GATE_SCRIPTS = ["~/.claude/hooks/effect-review-gate.sh", "~/.claude/hooks/naming-review-gate.sh"];
+const DEFAULT_AGENTS_DIR = "~/.claude/agents";
 const GATE_TIMEOUT_MS = 20_000;
 const REVIEW_TIMEOUT_MS = 15 * 60_000;
 const KEPT_RUNS = 5;
@@ -67,17 +66,30 @@ function runIsPending(run: AuditRun): boolean {
 }
 
 /** The agents a gate's block reason names, limited to agents that exist on disk. */
-function agentsNamedIn(reason: string): string[] {
-  if (!existsSync(AGENTS_DIR)) return [];
-  return readdirSync(AGENTS_DIR)
+function agentsNamedIn(reason: string, agentsDir: string): string[] {
+  if (!existsSync(agentsDir)) return [];
+  return readdirSync(agentsDir)
     .filter((file) => file.endsWith(".md"))
     .map((file) => file.slice(0, -".md".length))
     .filter((agent) => new RegExp(`(^|[^\\w-])${agent}([^\\w-]|$)`).test(reason));
 }
 
-function reviewerPrompt(agent: string, gateRequest: string, workspacePath: string): string {
+function expandHome(path: string): string {
+  return path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
+}
+
+/** A reviewer's answer when it found nothing to fix. */
+function isClean(review: Review): boolean {
+  return review.status === "done" && review.output?.trim().replace(/[`.]/g, "").toLowerCase() === "no findings";
+}
+
+function hasFindings(run: AuditRun): boolean {
+  return run.reviews.some((review) => review.status === "done" && !isClean(review));
+}
+
+function reviewerPrompt(agent: string, gateRequest: string, workspacePath: string, agentsDir: string): string {
   return [
-    `You are the ${agent} subagent. Read ${join(AGENTS_DIR, `${agent}.md`)} and follow its body as your instructions (ignore its frontmatter).`,
+    `You are the ${agent} subagent. Read ${join(agentsDir, `${agent}.md`)} and follow its body as your instructions (ignore its frontmatter).`,
     "",
     `The review gate in ${workspacePath} asked for this review. Review only what this request scopes:`,
     "",
@@ -92,6 +104,7 @@ function reviewerPrompt(agent: string, gateRequest: string, workspacePath: strin
 
 function formatFindings(run: AuditRun): string {
   return run.reviews
+    .filter((review) => !isClean(review))
     .map((review) => {
       const body =
         review.status === "done"
@@ -107,6 +120,44 @@ function describeError(error: unknown): string {
 }
 
 export default async function plugin(bb: BbPluginApi) {
+  const settings = bb.settings.define({
+    gateScripts: {
+      type: "string",
+      label: "Gate scripts",
+      description:
+        "One path per line (~ allowed). Each is a Claude Code review gate run as `<script> snapshot` before a turn and `<script> check` after it, with the hook JSON on stdin.",
+      experimental_multiline: true,
+      default: DEFAULT_GATE_SCRIPTS.join("\n"),
+    },
+    agentsDir: {
+      type: "string",
+      label: "Agents directory",
+      description: "Where the agents named by the gates live, as <name>.md.",
+      default: DEFAULT_AGENTS_DIR,
+    },
+    autoApply: {
+      type: "boolean",
+      label: "Apply automatically",
+      description:
+        "Send findings to the agent as soon as the audit finishes, so you review the fixes instead of the findings. Off: findings wait in the thread context card.",
+      default: true,
+    },
+  });
+
+  async function config() {
+    const values = await settings.get();
+    return {
+      gateScripts: values.gateScripts
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .map(expandHome)
+        .filter((script) => existsSync(script)),
+      agentsDir: expandHome(values.agentsDir.trim()),
+      autoApply: values.autoApply,
+    };
+  }
+
   // Threads whose next idle ends our own "apply" turn: auditing it again would loop,
   // just as the hooks let the turn end after one block (stop_hook_active).
   const skipNextIdle = new Set<string>();
@@ -175,6 +226,7 @@ export default async function plugin(bb: BbPluginApi) {
     agent: string,
     gateRequest: string,
     workspacePath: string,
+    agentsDir: string,
   ) {
     try {
       const [primary, defaults] = await Promise.all([
@@ -192,7 +244,7 @@ export default async function plugin(bb: BbPluginApi) {
         // bb archives and deletes the reviewer together with its primary thread.
         lifecycleOwnerThreadId: primaryThreadId,
         title: `Audit ${agent}: ${primary.title ?? primaryThreadId}`,
-        prompt: reviewerPrompt(agent, gateRequest, workspacePath),
+        prompt: reviewerPrompt(agent, gateRequest, workspacePath, agentsDir),
       });
       await updateReview(primaryThreadId, runId, agent, { reviewerThreadId: reviewer.id });
       await bb.sdk.threads.wait({ threadId: reviewer.id, status: "idle", timeoutMs: REVIEW_TIMEOUT_MS });
@@ -211,9 +263,9 @@ export default async function plugin(bb: BbPluginApi) {
   async function auditTurn(threadId: string) {
     const workspacePath = await workspacePathOf(threadId);
     if (!workspacePath) return;
+    const { gateScripts, agentsDir, autoApply } = await config();
     const gateRequests: string[] = [];
-    for (const script of GATE_SCRIPTS) {
-      if (!existsSync(script)) continue;
+    for (const script of gateScripts) {
       const stdout = (await runGate(script, "check", workspacePath, threadId)).trim();
       if (!stdout) continue;
       try {
@@ -226,7 +278,7 @@ export default async function plugin(bb: BbPluginApi) {
       }
     }
     const jobs = gateRequests.flatMap((gateRequest) =>
-      agentsNamedIn(gateRequest).map((agent) => ({ agent, gateRequest })),
+      agentsNamedIn(gateRequest, agentsDir).map((agent) => ({ agent, gateRequest })),
     );
     if (jobs.length === 0) return;
     bb.log.info(`Audit of ${threadId}: ${jobs.length} reviewer(s) from ${gateRequests.length} gate(s)`);
@@ -248,8 +300,30 @@ export default async function plugin(bb: BbPluginApi) {
     };
     await updateRuns(threadId, (runs) => [...runs, run]);
     await Promise.all(
-      jobs.map(({ agent, gateRequest }) => runReviewer(threadId, run.id, agent, gateRequest, workspacePath)),
+      jobs.map(({ agent, gateRequest }) =>
+        runReviewer(threadId, run.id, agent, gateRequest, workspacePath, agentsDir),
+      ),
     );
+    if (autoApply) await sendFindings(threadId, run.id, "automatic");
+  }
+
+  /**
+   * Sends a finished run's findings to the agent as an agent-only message, queued
+   * behind any turn in progress. Runs without findings are not sent.
+   */
+  async function sendFindings(threadId: string, runId: string, trigger: "automatic" | "user") {
+    const run = await takePendingRun(threadId, runId);
+    if (!run || !hasFindings(run)) return false;
+    const intro =
+      trigger === "automatic"
+        ? "Background audits of your last turn found the issues below. Apply the fixes now. The user reviews your changes afterwards and may revert some, so keep each fix focused and end with one line per finding saying what you changed, or that you skipped it and why."
+        : "The user asked you to apply these background audit findings. Fix them, or say which ones you decided not to fix and why.";
+    await bb.sdk.threads.send({
+      threadId,
+      mode: "queue-if-active",
+      input: [{ type: "text", visibility: "agent-only", text: `${intro}\n\n${formatFindings(run)}`, mentions: [] }],
+    });
+    return true;
   }
 
   /** Marks a finished, unapplied run (the newest one by default) as applied and returns it. */
@@ -270,8 +344,8 @@ export default async function plugin(bb: BbPluginApi) {
   // Threads whose current turn already has its worktree snapshot.
   const snapshotted = new Set<string>();
   async function snapshot(threadId: string, workspacePath: string) {
-    for (const script of GATE_SCRIPTS) {
-      if (existsSync(script)) await runGate(script, "snapshot", workspacePath, threadId);
+    for (const script of (await config()).gateScripts) {
+      await runGate(script, "snapshot", workspacePath, threadId);
     }
     snapshotted.add(threadId);
   }
@@ -324,7 +398,7 @@ export default async function plugin(bb: BbPluginApi) {
     parameters: z.object({}),
     async execute(_input, { threadId }) {
       const run = await takePendingRun(threadId);
-      if (run) {
+      if (run && hasFindings(run)) {
         // This turn applies findings; auditing its own fixes again would loop.
         skipNextIdle.add(threadId);
         return `${formatFindings(run)}\n\nFix these findings, or tell the user which ones you decided not to fix and why.`;
@@ -341,7 +415,7 @@ export default async function plugin(bb: BbPluginApi) {
     return {
       tools: [TOOL_NAME],
       skills: [],
-      instructions: `Background audits (naming, Effect and other reviewers) run on their own after your turns and are shown to the user, not to you. Do not run those reviews yourself, even if a hook asks you to. When the user asks you to apply the audit findings, call ${TOOL_NAME} and act on what it returns.`,
+      instructions: `Background audits (naming, Effect and other reviewers) run on their own after your turns; when they find something, you get the findings in a later message. Do not run those reviews yourself, even if a hook asks you to. When the user asks you to apply pending audit findings, call ${TOOL_NAME} and act on what it returns.`,
     };
   });
 
@@ -350,21 +424,7 @@ export default async function plugin(bb: BbPluginApi) {
       return { runs: await readRuns(threadId) };
     },
     async apply({ threadId, runId }) {
-      const run = await takePendingRun(threadId, runId);
-      if (!run) return { ok: false };
-      await bb.sdk.threads.send({
-        threadId,
-        mode: "queue-if-active",
-        input: [
-          {
-            type: "text",
-            visibility: "agent-only",
-            text: `The user asked you to apply these background audit findings:\n\n${formatFindings(run)}\n\nFix them, or say which ones you decided not to fix and why.`,
-            mentions: [],
-          },
-        ],
-      });
-      return { ok: true };
+      return { ok: await sendFindings(threadId, runId, "user") };
     },
     async dismiss({ threadId, runId }) {
       await updateRun(threadId, runId, (run) => ({ ...run, dismissedAt: Date.now() }));
