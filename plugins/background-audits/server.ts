@@ -89,12 +89,13 @@ const claudeSettingsSchema = z
 
 /** The scripts a hook event's commands run as `[bash|sh] <script> <mode>`. */
 function scriptsRunAs(entries: z.infer<typeof hookEntriesSchema> | undefined, mode: string): Set<string> {
-  const pattern = new RegExp(`^(?:(?:ba)?sh\\s+)?(['"]?)([^'"\\s]+)\\1\\s+${mode}\\s*$`);
+  const pattern = new RegExp(`^(?:(?:ba)?sh\\s+)?(?:'([^']+)'|"([^"]+)"|(\\S+))\\s+${mode}\\s*$`);
   const scripts = new Set<string>();
   for (const entry of entries ?? []) {
     for (const hook of entry.hooks ?? []) {
       const match = hook.command?.trim().match(pattern);
-      if (match?.[2]) scripts.add(expandHome(match[2]));
+      const script = match?.[1] ?? match?.[2] ?? match?.[3];
+      if (script) scripts.add(expandHome(script));
     }
   }
   return scripts;
@@ -104,15 +105,21 @@ function scriptsRunAs(entries: z.infer<typeof hookEntriesSchema> | undefined, mo
  * The review gates registered in Claude Code's settings: every script run as
  * `<script> snapshot` on UserPromptSubmit and as `<script> check` on Stop.
  */
-function detectGateScripts(): string[] {
+function detectGateScripts(): { scripts: string[]; problem: string | null } {
+  let raw: unknown;
   try {
-    const parsed = claudeSettingsSchema.safeParse(JSON.parse(readFileSync(expandHome(CLAUDE_SETTINGS), "utf8")));
-    if (!parsed.success) return [];
-    const snapshots = scriptsRunAs(parsed.data.hooks?.UserPromptSubmit, "snapshot");
-    return [...scriptsRunAs(parsed.data.hooks?.Stop, "check")].filter((script) => snapshots.has(script));
-  } catch {
-    return [];
+    raw = JSON.parse(readFileSync(expandHome(CLAUDE_SETTINGS), "utf8"));
+  } catch (error) {
+    return { scripts: [], problem: `cannot read ${CLAUDE_SETTINGS}: ${describeError(error)}` };
   }
+  const parsed = claudeSettingsSchema.safeParse(raw);
+  if (!parsed.success) return { scripts: [], problem: `unexpected hooks in ${CLAUDE_SETTINGS}: ${parsed.error.message}` };
+  const snapshots = scriptsRunAs(parsed.data.hooks?.UserPromptSubmit, "snapshot");
+  const scripts = [...scriptsRunAs(parsed.data.hooks?.Stop, "check")].filter((script) => snapshots.has(script));
+  return {
+    scripts,
+    problem: scripts.length === 0 ? `no hook in ${CLAUDE_SETTINGS} runs a script as \`snapshot\` and \`check\`` : null,
+  };
 }
 
 /** A reviewer's answer when it found nothing to fix. */
@@ -181,6 +188,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  // Last detection result logged, so each turn doesn't log it again.
+  let lastDetection: string | null = null;
+
   async function config() {
     const values = await settings.get();
     const listed = values.gateScripts
@@ -188,8 +198,19 @@ export default async function plugin(bb: BbPluginApi) {
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
       .map(expandHome);
+    let gateScripts = listed;
+    if (listed.length === 0) {
+      const detected = detectGateScripts();
+      const summary = detected.problem ?? detected.scripts.join(", ");
+      if (summary !== lastDetection) {
+        lastDetection = summary;
+        if (detected.problem) bb.log.warn(`No gate scripts, so no audits: ${detected.problem}`);
+        else bb.log.info(`Gate scripts from ${CLAUDE_SETTINGS}: ${summary}`);
+      }
+      gateScripts = detected.scripts;
+    }
     return {
-      gateScripts: (listed.length > 0 ? listed : detectGateScripts()).filter((script) => existsSync(script)),
+      gateScripts: gateScripts.filter((script) => existsSync(script)),
       agentsDir: expandHome(values.agentsDir.trim()),
       autoApply: values.autoApply,
     };
