@@ -3,8 +3,9 @@
 Runs your Claude Code review gates in bb without blocking turns or filling the
 conversation.
 
-By default the gates are `~/.claude/hooks/effect-review-gate.sh` and
-`~/.claude/hooks/naming-review-gate.sh`.
+The gates are the scripts that `~/.claude/settings.json` runs as
+`<script> snapshot` on `UserPromptSubmit` and as `<script> check` on `Stop`, so a
+new gate registered there is picked up without touching the plugin.
 
 ## How it works
 
@@ -40,7 +41,7 @@ Settings are under Settings → Installed plugins, or `bb plugin config backgrou
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `gateScripts` | `~/.claude/hooks/effect-review-gate.sh` and `~/.claude/hooks/naming-review-gate.sh` | Gate scripts, one path per line (`~` allowed). Each is called as `<script> snapshot` and `<script> check`, with Claude's hook JSON on stdin. A missing script is skipped. |
+| `gateScripts` | empty: detected from `~/.claude/settings.json` | Gate scripts, one path per line (`~` allowed), to use instead of the detected ones. Each is called as `<script> snapshot` and `<script> check`, with Claude's hook JSON on stdin. A missing script is skipped. |
 | `agentsDir` | `~/.claude/agents` | Where the agents the gates name live, as `<name>.md`. |
 | `autoApply` | `true` | Send findings to the agent as soon as the audit finishes. |
 

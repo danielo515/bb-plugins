@@ -3,19 +3,21 @@
 // thread that follows ~/.claude/agents/<agent>.md. By default the findings are then
 // sent to the agent as an agent-only message so it applies them right away, and the
 // user reviews the result; with "Apply automatically" off they wait in the thread
-// context card instead. Script paths and the agents directory are plugin settings.
+// context card instead. The gates are the scripts Claude Code's settings.json runs as
+// `<script> snapshot` on UserPromptSubmit and `<script> check` on Stop, unless the
+// "Gate scripts" setting lists them; the agents directory is a setting too.
 //
 // The gate scripts stay the single source of truth for *when* to audit and *what*
 // scope to give each agent. Inside bb they skip themselves (BB_THREAD_ID is set), so
 // this plugin runs them without that variable.
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
-const DEFAULT_GATE_SCRIPTS = ["~/.claude/hooks/effect-review-gate.sh", "~/.claude/hooks/naming-review-gate.sh"];
+const CLAUDE_SETTINGS = "~/.claude/settings.json";
 const DEFAULT_AGENTS_DIR = "~/.claude/agents";
 const GATE_TIMEOUT_MS = 20_000;
 const REVIEW_TIMEOUT_MS = 15 * 60_000;
@@ -78,6 +80,41 @@ function expandHome(path: string): string {
   return path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
 }
 
+const hookEntriesSchema = z.array(
+  z.object({ hooks: z.array(z.object({ command: z.string().optional() }).loose()).optional() }).loose(),
+);
+const claudeSettingsSchema = z
+  .object({ hooks: z.object({ UserPromptSubmit: hookEntriesSchema.optional(), Stop: hookEntriesSchema.optional() }).loose().optional() })
+  .loose();
+
+/** The scripts a hook event's commands run as `[bash|sh] <script> <mode>`. */
+function scriptsRunAs(entries: z.infer<typeof hookEntriesSchema> | undefined, mode: string): Set<string> {
+  const pattern = new RegExp(`^(?:(?:ba)?sh\\s+)?(['"]?)([^'"\\s]+)\\1\\s+${mode}\\s*$`);
+  const scripts = new Set<string>();
+  for (const entry of entries ?? []) {
+    for (const hook of entry.hooks ?? []) {
+      const match = hook.command?.trim().match(pattern);
+      if (match?.[2]) scripts.add(expandHome(match[2]));
+    }
+  }
+  return scripts;
+}
+
+/**
+ * The review gates registered in Claude Code's settings: every script run as
+ * `<script> snapshot` on UserPromptSubmit and as `<script> check` on Stop.
+ */
+function detectGateScripts(): string[] {
+  try {
+    const parsed = claudeSettingsSchema.safeParse(JSON.parse(readFileSync(expandHome(CLAUDE_SETTINGS), "utf8")));
+    if (!parsed.success) return [];
+    const snapshots = scriptsRunAs(parsed.data.hooks?.UserPromptSubmit, "snapshot");
+    return [...scriptsRunAs(parsed.data.hooks?.Stop, "check")].filter((script) => snapshots.has(script));
+  } catch {
+    return [];
+  }
+}
+
 /** A reviewer's answer when it found nothing to fix. */
 function isClean(review: Review): boolean {
   return review.status === "done" && review.output?.trim().replace(/[`.]/g, "").toLowerCase() === "no findings";
@@ -125,9 +162,9 @@ export default async function plugin(bb: BbPluginApi) {
       type: "string",
       label: "Gate scripts",
       description:
-        "One path per line (~ allowed). Each is a Claude Code review gate run as `<script> snapshot` before a turn and `<script> check` after it, with the hook JSON on stdin.",
+        "Empty: detected from ~/.claude/settings.json (scripts run as `<script> snapshot` on UserPromptSubmit and `<script> check` on Stop). Otherwise one path per line (~ allowed), each run the same way with the hook JSON on stdin.",
       experimental_multiline: true,
-      default: DEFAULT_GATE_SCRIPTS.join("\n"),
+      default: "",
     },
     agentsDir: {
       type: "string",
@@ -146,13 +183,13 @@ export default async function plugin(bb: BbPluginApi) {
 
   async function config() {
     const values = await settings.get();
+    const listed = values.gateScripts
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map(expandHome);
     return {
-      gateScripts: values.gateScripts
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0)
-        .map(expandHome)
-        .filter((script) => existsSync(script)),
+      gateScripts: (listed.length > 0 ? listed : detectGateScripts()).filter((script) => existsSync(script)),
       agentsDir: expandHome(values.agentsDir.trim()),
       autoApply: values.autoApply,
     };
