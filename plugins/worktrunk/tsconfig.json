@@ -25,6 +25,7 @@
     "app.tsx",
     "host.ts",
     "contract.ts",
+    "pr.ts",
     "components",
     "lib"
   ]

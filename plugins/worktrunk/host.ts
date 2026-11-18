@@ -5,7 +5,7 @@ import { execFile, spawn } from "node:child_process";
 import { access, constants } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
-import { hostContract, hostSignals, parseSwitchJson, type Runner } from "./contract.js";
+import { hostContract, hostSignals, isPrReference, parseSwitchJson, type Runner } from "./contract.js";
 
 // wt usually lives outside a bare login shell's PATH (Homebrew is set up in
 // .zshrc, cargo in .profile), so fall back to where installers put it.
@@ -161,11 +161,13 @@ export default experimental_defineHostEntry({
       const timer = setInterval(flush, 400);
       try {
         const wtPath = await resolveWt(runner, context.signal);
+        // A PR reference names a branch that already exists (wt fetches it, and
+        // rejects --create). So does a retry, a restore or a branch the user
+        // named: those get a worktree without --create; wt reuses an existing one.
         const exists =
+          isPrReference(branch) ||
           (await capture("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], checkoutPath, context.signal))
             .code === 0;
-        // An existing branch (a retry, a restore, or a branch the user named)
-        // gets a worktree without --create; wt reuses one that already exists.
         const args = ["-C", checkoutPath, "switch"];
         if (!exists) args.push("--create");
         args.push(branch);

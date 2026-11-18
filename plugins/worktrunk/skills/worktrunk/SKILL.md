@@ -6,7 +6,7 @@ description: Spawn a bb thread into a new git worktree created by the user's wor
 # Worktrunk environment
 
 The Worktrunk plugin adds a **Worktrunk** environment choice. bb runs
-`wt -C <project checkout> switch [--create] <branch> --no-cd --format json` on the
+`wt -C <project checkout> switch [--create] <branch | pr:N> --no-cd --format json` on the
 machine, through the user's login shell, so worktrunk's `worktree-path`
 template and `pre-start` / `post-start` hooks decide where the worktree lives
 and how it is prepared. Hook output streams into the thread's provisioning log.
@@ -21,6 +21,15 @@ bb thread spawn --project <id> --environment-provider worktrunk \
 Both inputs are optional: `{}` uses bb's suggested branch name and wt's default
 base. An existing branch is checked out without `--create`; an existing
 worktree for it is attached and never removed by bb.
+
+To work on a pull request, pass `pr` instead (branch and base are ignored). It
+takes a number, `pr:N`, `mr:N` or the PR/MR URL, and runs `wt switch pr:N`,
+which fetches the PR's branch (fork PRs included):
+
+```sh
+bb thread spawn --project <id> --environment-provider worktrunk \
+  --environment-inputs '{"pr":"https://github.com/owner/repo/pull/123"}' --prompt "..."
+```
 
 ## Lifecycle
 
