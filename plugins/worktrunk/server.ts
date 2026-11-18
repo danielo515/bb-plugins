@@ -4,15 +4,20 @@
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import type { PluginEnvironmentProviderProgress } from "@get-bb/plugin-sdk/environment-provider";
 import { z } from "zod";
-import { hostContract, hostSignals, type Runner, type SwitchResult } from "./contract.js";
+import { hostContract, hostSignals, prReference, type Runner, type SwitchResult } from "./contract.js";
 
 export const PROVIDER_ID = "worktrunk";
 
-/** Both fields optional: `{}` means "use bb's suggested branch, base from wt". */
+/**
+ * All optional: `{}` means "use bb's suggested branch, base from wt". `pr` (a
+ * number, pr:N, mr:N or the PR/MR URL) checks out that PR's branch instead,
+ * the way `wt switch pr:N` does; branch and base are then ignored.
+ */
 export const inputsSchema = z
   .object({
     branch: z.string().trim().optional(),
     base: z.string().trim().optional(),
+    pr: z.string().trim().optional(),
   })
   .strict();
 
@@ -180,7 +185,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.experimental_environments.register({
     id: PROVIDER_ID,
     displayName: "Worktrunk",
-    description: "Create a worktree with your worktrunk config: its paths, hooks and approvals.",
+    description: "Create a worktree with your worktrunk config: its paths, hooks and approvals. Takes a branch or a pull request.",
     icon: "GitBranchPlus",
     requires: { gitCheckout: true },
     inputs: inputsSchema,
@@ -196,11 +201,17 @@ export default async function plugin(bb: BbPluginApi) {
     async create({ host: machine, projectCheckout, inputs, suggestedBranchName, pathKey, attempt, report, signal, experimental_claimPath }) {
       try {
         const stored = await storedLaunch(pathKey);
+        const pr = nonEmpty(inputs.pr);
+        const prRef = pr === null ? null : prReference(pr);
+        if (pr !== null && prRef === null) {
+          return { status: "failed", message: `Not a pull request: ${pr}. Use a number, pr:N, mr:N or the PR's URL.` };
+        }
         return await switchInto({
           hostId: machine.id,
           checkoutPath: projectCheckout.path,
-          branch: stored?.branch ?? nonEmpty(inputs.branch) ?? suggestedBranchName,
-          base: nonEmpty(inputs.base),
+          // A retry reuses what the first attempt resolved (for a PR, its branch).
+          branch: stored?.branch ?? prRef ?? nonEmpty(inputs.branch) ?? suggestedBranchName,
+          base: prRef === null ? nonEmpty(inputs.base) : null,
           pathKey,
           attempt,
           report,
@@ -214,7 +225,8 @@ export default async function plugin(bb: BbPluginApi) {
     async restore({ host: machine, projectCheckout, inputs, previous, pathKey, attempt, report, signal, experimental_claimPath }) {
       // The branch outlives the worktree; check it out again with wt.
       const prior = resourceSchema.safeParse(previous.resource);
-      const branch = prior.success ? prior.data.branch : nonEmpty(inputs.branch);
+      const pr = nonEmpty(inputs.pr);
+      const branch = prior.success ? prior.data.branch : ((pr === null ? null : prReference(pr)) ?? nonEmpty(inputs.branch));
       if (branch === null) return { status: "failed", message: "No branch recorded for this environment." };
       try {
         return await switchInto({

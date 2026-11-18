@@ -2,6 +2,8 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
+export { isPrReference, prReference } from "./pr.js";
+
 /** How the host locates and runs `wt`. Empty strings mean "auto-detect". */
 const runnerSchema = z
   .object({
@@ -34,13 +36,14 @@ export const hostContract = defineRpcContract({
       .strict(),
     experimental_retryable: true,
   },
-  /** `wt switch [--create] <branch>` in the project checkout. Streams output as `output` signals. */
+  /** `wt switch [--create] <branch | pr:N | PR URL>` in the project checkout. Streams output as `output` signals. */
   switchWorktree: {
     input: z
       .object({
         runner: runnerSchema,
         runId: z.string().min(1),
         checkoutPath: z.string().min(1),
+        /** A branch name, or a PR reference from prReference(). */
         branch: z.string().min(1),
         base: z.string().nullable(),
         approve: z.boolean(),

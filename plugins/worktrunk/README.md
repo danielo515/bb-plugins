@@ -16,11 +16,15 @@ bb's built-in worktree logic, the thread's worktree comes from your own
 
 - **UI:** New thread → environment picker → *Worktrunk*. Optionally type a
   branch (empty: bb's suggested name) and a base (empty: wt's default branch).
+  Paste a PR/MR URL (or `#123`, `pr:123`, `mr:12`) instead of a branch to
+  check out that pull request, as `wt switch pr:123` does.
 - **CLI:**
 
 ```sh
 bb thread spawn --project <id> --environment-provider worktrunk \
   --environment-inputs '{"branch":"feat/x"}' --prompt "..."
+bb thread spawn --project <id> --environment-provider worktrunk \
+  --environment-inputs '{"pr":"123"}' --prompt "..."
 bb worktrunk doctor --host <host-id>   # which wt bb runs
 ```
 
